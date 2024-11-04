@@ -1,6 +1,8 @@
+import time
 from typing import Tuple
 
 import torch
+
 from dit import DiT_models
 from vae import VAE_models
 from torchvision.io import read_video
@@ -75,6 +77,8 @@ def clamp_mouse_input(mouse_input: Tuple[int, int]) -> Tuple[float, float]:
     assert -1.0 - 1e-3 <= clamped_y <= 1.0 + 1e-3, f"Normalized y must be in [-1, 1], got {clamped_y}"
 
     return (clamped_x, clamped_y)
+
+
 # Helper functions to capture live actions
 def get_current_action(mouse_rel):
     action = {}
@@ -108,6 +112,7 @@ def get_current_action(mouse_rel):
     action["drop"] = 1 if keys[pygame.K_q] else 0
     return action
 
+
 def action_to_tensor(action):
     actions_one_hot = torch.zeros(len(ACTION_KEYS), device=device)
     for j, action_key in enumerate(ACTION_KEYS):
@@ -129,6 +134,7 @@ def action_to_tensor(action):
             value = float(value)
         actions_one_hot[j] = value
     return actions_one_hot
+
 
 # Initialize pygame
 pygame.init()
@@ -157,8 +163,8 @@ vae = vae.to(device).half().eval()
 # Sampling params
 B = 1
 max_noise_level = 1000
-ddim_noise_steps = 60
-noise_range = torch.linspace(-1, max_noise_level - 1, ddim_noise_steps + 1)
+ddim_noise_steps = 16
+noise_range = torch.linspace(-1, max_noise_level - 1, ddim_noise_steps + 1).to(device)
 noise_abs_max = 20
 ctx_max_noise_idx = ddim_noise_steps // 10 * 3
 enable_torch_compile_model = False
@@ -170,16 +176,18 @@ if enable_torch_compile_model:
 if enable_torch_compile_vae:
     vae = torch.compile(vae, mode='default')
 
-
 # Adjustable context window size
 context_window_size = 4  # Adjust this value as needed
 
 # Get input video (first frame as prompt)
 video_id = "snippy-chartreuse-mastiff-f79998db196d-20220401-224517.chunk_001"
+
+# mp4_path = '/home/mix/Playground/ComfyUI/output/game_00001.mp4'
+
 mp4_path = f"sample_data/{video_id}.mp4"
 video = read_video(mp4_path, pts_unit="sec")[0].float() / 255
 
-offset = 100
+offset = 0
 video = video[offset:]
 n_prompt_frames = 1
 x = video[:n_prompt_frames].unsqueeze(0).to(device)
@@ -204,16 +212,36 @@ actions_list = []
 initial_action = torch.zeros(len(ACTION_KEYS), device=device).unsqueeze(0)
 actions_list.append(initial_action)
 
-# Main loop
+# Initialize Pygame font for FPS and adjustment info
+pygame.font.init()
+font_size = 24
+font = pygame.font.SysFont('Arial', font_size)
+
+# Initialize clock
 clock = pygame.time.Clock()
+
+# Initialize variables for FPS measurement
+frame_times = []  # List to store timestamps of recent frames
+fps = 0.0
+
+# Initialize variables for displaying adjustment info
+adjustment_message = ""
+adjustment_display_time = 0  # Time when the message should stop displaying
+
+# Initialize variable for toggling FPS display
+show_fps = True
+
+# Main loop
 running = True
-mouse_captured = False  # Initially captured
+mouse_captured = False  # Initially not captured
 # Center position
 center_pos = (screen_width // 2, screen_height // 2)
 pygame.mouse.set_pos(center_pos)
 
 with torch.inference_mode():
     while running:
+        current_time = time.time()
+
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
@@ -234,6 +262,34 @@ with torch.inference_mode():
                         pygame.mouse.set_pos(center_pos)  # Reset to center
                         pygame.mouse.get_rel()  # Reset relative movement
                         print("Mouse captured.")
+
+                elif event.key == pygame.K_F3:
+                    # Toggle FPS display
+                    show_fps = not show_fps
+                    print(f"FPS display toggled to {'ON' if show_fps else 'OFF'}.")
+
+                # Handle '+' and '-' key presses to adjust ddim_noise_steps
+                elif event.key in [pygame.K_PLUS, pygame.K_EQUALS]:
+                    ddim_noise_steps += 1
+                    if ddim_noise_steps > 100:  # Set an upper limit if desired
+                        ddim_noise_steps = 100
+                    # Update noise_range and ctx_max_noise_idx
+                    noise_range = torch.linspace(-1, max_noise_level - 1, ddim_noise_steps + 1).to(device)
+                    ctx_max_noise_idx = ddim_noise_steps // 10 * 3
+                    adjustment_message = f"ddim_noise_steps: {ddim_noise_steps}"
+                    adjustment_display_time = current_time + 2  # Display for 2 seconds
+                    print(adjustment_message)
+
+                elif event.key in [pygame.K_MINUS, pygame.K_UNDERSCORE]:
+                    ddim_noise_steps -= 1
+                    if ddim_noise_steps < 1:
+                        ddim_noise_steps = 1
+                    # Update noise_range and ctx_max_noise_idx
+                    noise_range = torch.linspace(-1, max_noise_level - 1, ddim_noise_steps + 1).to(device)
+                    ctx_max_noise_idx = ddim_noise_steps // 10 * 3
+                    adjustment_message = f"ddim_noise_steps: {ddim_noise_steps}"
+                    adjustment_display_time = current_time + 2  # Display for 2 seconds
+                    print(adjustment_message)
 
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if not mouse_captured:
@@ -318,9 +374,34 @@ with torch.inference_mode():
         frame_surface = pygame.surfarray.make_surface(np.transpose(frame, (1, 0, 2)))
         frame_surface = pygame.transform.scale(frame_surface, (screen_width, screen_height))
         screen.blit(frame_surface, (0, 0))
+
+        # --- FPS Counter ---
+        # Update frame times
+        frame_times.append(current_time)
+        # Remove frame times older than 1 second
+        while frame_times and frame_times[0] < current_time - 1:
+            frame_times.pop(0)
+        # Calculate FPS
+        fps = len(frame_times)
+
+        if show_fps:
+            fps_text = font.render(f"FPS: {fps}", True, (255, 255, 255))  # White color
+            fps_rect = fps_text.get_rect(topright=(screen_width - 10, 10))  # 10 pixels padding from top-right
+            screen.blit(fps_text, fps_rect)
+        # -------------------
+
+        # --- Adjustment Info Display ---
+        if adjustment_message and current_time < adjustment_display_time:
+            adjustment_text = font.render(adjustment_message, True, (255, 255, 0))  # Yellow color
+            adjustment_rect = adjustment_text.get_rect(center=(screen_width // 2, 30))  # Top center
+            screen.blit(adjustment_text, adjustment_rect)
+        elif current_time >= adjustment_display_time:
+            adjustment_message = ""  # Clear the message
+        # ---------------------------------
+
         pygame.display.flip()
 
         # Control frame rate
-        clock.tick(24)  # Adjust FPS as needed
+        clock.tick(35)  # Adjust FPS as needed
 
 pygame.quit()
