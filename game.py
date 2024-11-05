@@ -2,6 +2,8 @@ import time
 from typing import Tuple
 
 import torch
+import torch._dynamo
+torch._dynamo.config.suppress_errors = True
 
 from dit import DiT_models
 from vae import VAE_models
