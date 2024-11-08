@@ -16,6 +16,25 @@ import numpy as np
 
 assert torch.cuda.is_available()
 device = "cuda:0"
+# Sampling params
+model_path = "oasis500m.pt"
+vae_path = "vit-l-20.pt"
+B = 1
+max_noise_level = 1000
+ddim_noise_steps = 16
+noise_abs_max = 20
+enable_torch_compile_model = True
+enable_torch_compile_vae = True
+# Adjustable context window size
+context_window_size = 4  # Adjust this value as needed
+n_prompt_frames = 4
+offset = 0
+scaling_factor = 0.07843137255
+# Get input video (first frame as prompt)
+video_id = "snippy-chartreuse-mastiff-f79998db196d-20220401-224517.chunk_001"
+stabilization_level = 15
+screen_width = 1024  # Adjust as needed
+screen_height = 1024  # Adjust as needed
 
 # Define ACTION_KEYS
 ACTION_KEYS = [
@@ -144,33 +163,23 @@ pygame.mouse.set_visible(True)
 pygame.event.set_grab(False)
 
 # Set up display
-screen_width = 1024  # Adjust as needed
-screen_height = 1024  # Adjust as needed
 screen = pygame.display.set_mode((screen_width, screen_height))
 pygame.display.set_caption("Generated Video")
 
 # Load DiT checkpoint
-ckpt = torch.load("oasis500m.pt")
+ckpt = torch.load(model_path)
 model = DiT_models["DiT-S/2"]()
 model.load_state_dict(ckpt, strict=False)
 model = model.to(device).half().eval()
 
 # Load VAE checkpoint
-vae_ckpt = torch.load("vit-l-20.pt")
+vae_ckpt = torch.load(vae_path)
 vae = VAE_models["vit-l-20-shallow-encoder"]()
 vae.load_state_dict(vae_ckpt)
 vae = vae.to(device).half().eval()
 
-
-# Sampling params
-B = 1
-max_noise_level = 1000
-ddim_noise_steps = 16
 noise_range = torch.linspace(-1, max_noise_level - 1, ddim_noise_steps + 1).to(device)
-noise_abs_max = 20
 ctx_max_noise_idx = ddim_noise_steps // 10 * 3
-enable_torch_compile_model = True
-enable_torch_compile_vae = True
 
 if enable_torch_compile_model:
     # Optional compilation for performance
@@ -178,21 +187,14 @@ if enable_torch_compile_model:
 if enable_torch_compile_vae:
     vae = torch.compile(vae, mode='reduce-overhead')
 
-# Adjustable context window size
-context_window_size = 4  # Adjust this value as needed
-
-# Get input video (first frame as prompt)
-video_id = "snippy-chartreuse-mastiff-f79998db196d-20220401-224517.chunk_001"
 
 # mp4_path = '/home/mix/Playground/ComfyUI/output/game_00001.mp4'
 
 mp4_path = f"sample_data/{video_id}.mp4"
 video = read_video(mp4_path, pts_unit="sec")[0].float() / 255
 
-offset = 0
 video = video[offset:]
-n_prompt_frames = 4
-scaling_factor = 0.07843137255
+
 # Initialize action list
 def reset():
     global x
@@ -204,40 +206,63 @@ def reset():
     for i in range(n_prompt_frames - 1):
         actions_list.append(initial_action)
 
+
 @torch.inference_mode
-def sample(x, actions_tensor, ddim_noise_steps, ctx_max_noise_idx, model):
-    # Prepare time steps
-    context_length = x.shape[1]
+def sample(x, actions_tensor, ddim_noise_steps, stabilization_level, alphas_cumprod, noise_range, noise_abs_max, model):
+    """
+    Sample function with constant alpha_next and stabilization_level implemented.
+
+    Args:
+        x (torch.Tensor): Current latent tensor of shape [B, T, C, H, W].
+        actions_tensor (torch.Tensor): Actions tensor of shape [B, T, num_actions].
+        ddim_noise_steps (int): Number of DDIM noise steps.
+        stabilization_level (int): Level to stabilize the initial frames.
+        alphas_cumprod (torch.Tensor): Cumulative product of alphas for each timestep.
+        noise_range (torch.Tensor): Noise schedule tensor.
+        noise_abs_max (float): Maximum absolute noise value.
+        model (torch.nn.Module): The diffusion model.
+
+    Returns:
+        torch.Tensor: Updated latent tensor after sampling.
+    """
+    B, context_length, C, H, W = x.shape
+
     for noise_idx in reversed(range(1, ddim_noise_steps + 1)):
         # Set up noise values
-        ctx_noise_idx = min(noise_idx, ctx_max_noise_idx)
-        t_ctx = torch.full((B, context_length - 1), noise_range[ctx_noise_idx], dtype=torch.long, device=device)
-        t_last = torch.full((B, 1), noise_range[noise_idx], dtype=torch.long, device=device)
-        t = torch.cat([t_ctx, t_last], dim=1)
-        t_next = torch.cat([t_ctx, torch.full((B, 1), noise_range[noise_idx - 1], dtype=torch.long, device=device)],
-                           dim=1)
+        t_ctx = torch.full((B, context_length - 1), stabilization_level - 1, dtype=torch.long, device=device)
+        t = torch.full((B, 1), noise_range[noise_idx], dtype=torch.long, device=device)
+        t_next = torch.full((B, 1), noise_range[noise_idx - 1], dtype=torch.long, device=device)
         t_next = torch.where(t_next < 0, t, t_next)
-
-        # Add noise to context frames (except the last frame)
-        x_curr = x.clone()
-        if context_length > 1:
-            ctx_noise = torch.randn_like(x_curr[:, :-1])
-            ctx_noise = torch.clamp(ctx_noise, -noise_abs_max, +noise_abs_max)
-            x_curr[:, :-1] = alphas_cumprod[t[:, :-1]].sqrt() * x_curr[:, :-1] + \
-                             (1 - alphas_cumprod[t[:, :-1]]).sqrt() * ctx_noise
+        t = torch.cat([t_ctx, t], dim=1)
+        t_next = torch.cat([t_ctx, t_next], dim=1)
 
         # Get model predictions
         with autocast("cuda", dtype=torch.half):
-            v = model(x_curr, t, actions_tensor)
+            v = model(x, t, actions_tensor)
 
-        x_start = alphas_cumprod[t].sqrt() * x_curr - (1 - alphas_cumprod[t]).sqrt() * v
-        x_noise = ((1 / alphas_cumprod[t]).sqrt() * x_curr - x_start) / \
-                  (1 / alphas_cumprod[t] - 1).sqrt()
+        # Compute x_start and x_noise
+        x_start = alphas_cumprod[t].sqrt() * x - (1 - alphas_cumprod[t]).sqrt() * v
+        x_noise = ((1 / alphas_cumprod[t]).sqrt() * x - x_start) / (1 / alphas_cumprod[t] - 1).sqrt()
 
-        # Get frame prediction
-        x_pred = alphas_cumprod[t_next].sqrt() * x_start + x_noise * (1 - alphas_cumprod[t_next]).sqrt()
+        # Compute alpha_next with constant values for context frames
+        alpha_next = alphas_cumprod[t_next].clone()
+        alpha_next[:, :-1] = torch.ones_like(alpha_next[:, :-1])
+
+        # Ensure the last frame has alpha_next set to 1 if it's the first noise step
+        if noise_idx == 1:
+            alpha_next[:, -1:] = torch.ones_like(alpha_next[:, -1:])
+
+        # Compute the predicted x
+        x_pred = alpha_next.sqrt() * x_start + x_noise * (1 - alpha_next).sqrt()
+
+        # Update only the last frame in the latent tensor
         x[:, -1:] = x_pred[:, -1:]
+
+        # Optionally clamp the noise to maintain stability
+        x[:, -1:] = torch.clamp(x[:, -1:], -noise_abs_max, noise_abs_max)
+
     return x
+
 
 @torch.inference_mode
 def encode(video, vae):
@@ -392,7 +417,8 @@ while running:
         actions_tensor = torch.stack(actions_list, dim=1)  # Shape [1, context_length, num_actions]
     else:
         reset_context = False
-    x = sample(x, actions_tensor, ddim_noise_steps, ctx_max_noise_idx, model)
+    
+    x = sample(x, actions_tensor, ddim_noise_steps, stabilization_level, alphas_cumprod, noise_range, noise_abs_max, model)
 
     frame = decode(x, vae)
 
