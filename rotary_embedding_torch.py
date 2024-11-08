@@ -3,11 +3,10 @@ Adapted from https://github.com/lucidrains/rotary-embedding-torch/blob/main/rota
 """
 
 from __future__ import annotations
-from math import pi, log
+from math import pi
 
 import torch
-from torch.nn import Module, ModuleList
-from torch.amp import autocast
+from torch.nn import Module
 from torch import nn, einsum, broadcast_tensors, Tensor
 
 from einops import rearrange, repeat
@@ -36,7 +35,7 @@ def rotate_half(x):
     x = torch.stack((-x2, x1), dim = -1)
     return rearrange(x, '... d r -> ... (d r)')
 
-@autocast('cuda', enabled = False)
+# @autocast('cuda', enabled = False)
 def apply_rotary_emb(freqs, t, start_index = 0, scale = 1., seq_dim = -2):
     dtype = t.dtype
 
@@ -54,9 +53,9 @@ def apply_rotary_emb(freqs, t, start_index = 0, scale = 1., seq_dim = -2):
     t_middle = t[..., start_index:end_index]
     t_right = t[..., end_index:]
 
-    # Apply rotary embeddings without modifying t in place    
+    # Apply rotary embeddings without modifying t in place
     t_transformed = (t_middle * freqs.cos() * scale) + (rotate_half(t_middle) * freqs.sin() * scale)
-        
+
     out = torch.cat((t_left, t_transformed, t_right), dim=-1)
 
     return out.type(dtype)
