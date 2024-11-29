@@ -1,3 +1,24 @@
+# journee/open-oasis
+
+This is a fork of https://github.com/XmYx/deforum-studio which is in turn a fork from the original oasis repo that includes pygame integration to play the model in real-time.
+
+Requirements:
+Make sure you have a hugging face account setup to run cli, or skip the hugging face part from setup.sh and download the files manually. 
+
+After downloading you should have two files on the root folder of the repo:
+oasis500m.pt
+vit-l-20.pt
+
+To setup:
+./setup.sh
+
+To play the game:
+./play.sh
+
+
+
+############################ ORIGINAL OASIS README ############################
+
 # Oasis 500M
 
 ![](./media/arch.png)
