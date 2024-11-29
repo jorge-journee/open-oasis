@@ -1,18 +1,20 @@
 # journee/open-oasis
 
-This is a fork of https://github.com/XmYx/deforum-studio which is in turn a fork from the original oasis repo that includes pygame integration to play the model in real-time.
+This is a fork of https://github.com/0xTas/oasis which is in turn a fork from the original oasis repo https://github.com/etched-ai/open-oasis 
+
+Original repo didn't include pygame integration but this one does and works out of the box. Just follow the instructions.
 
 Requirements:
-Make sure you have a hugging face account setup to run cli, or skip the hugging face part from setup.sh and download the files manually. 
+Make sure you have a hugging face account setup to run cli, or skip the hugging face part from setup.sh and download the files manually from https://huggingface.co/Etched/oasis-500m/tree/main 
 
 After downloading you should have two files on the root folder of the repo:
 oasis500m.pt
 vit-l-20.pt
 
-To setup:
+Run setup to get all requirements:
 ./setup.sh
 
-To play the game:
+Run plays script to play the game:
 ./play.sh
 
 
